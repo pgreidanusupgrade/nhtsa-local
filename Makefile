@@ -13,11 +13,11 @@ convert: build-db
 
 # Step 3: build the final API image (embeds api/vpic.sqlite)
 build:
-	docker build -t vpic-api ./api
+	docker compose build api
 
 # Step 4: run the API
 run:
-	docker run --rm -p 8080:8080 vpic-api
+	docker compose --profile run up api
 
 # All in one
 all: convert build run

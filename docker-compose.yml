@@ -35,3 +35,12 @@ services:
         condition: service_healthy
     profiles:
       - convert
+
+  api:
+    build:
+      context: api
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    profiles:
+      - run
