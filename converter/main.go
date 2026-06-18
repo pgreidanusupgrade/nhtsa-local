@@ -62,6 +62,14 @@ func main() {
 		log.Fatalf("indexes: %v", err)
 	}
 
+	log.Println("verifying procedure integrity...")
+	if err := verifyProcedureIntegrity(ctx, conn); err != nil {
+		log.Fatalf("PROCEDURE INTEGRITY CHECK FAILED: %v\n\n"+
+			"This means the NHTSA stored-procedure logic has changed in a way that\n"+
+			"the converter does not replicate. Do NOT ship this sqlite file.\n"+
+			"See CLAUDE.md 'Procedure integrity' section for what to investigate.", err)
+	}
+
 	log.Println("done.")
 }
 
