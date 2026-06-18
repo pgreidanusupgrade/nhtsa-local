@@ -5,11 +5,16 @@ ENV POSTGRES_USER=vpic
 ENV POSTGRES_PASSWORD=vpic
 ENV PGDATA=/var/lib/postgresql/data
 
+# VPIC_URL: override at build time with the correct release URL from:
+#   https://vpic.nhtsa.dot.gov/api/
+# The lite endpoint is stable; full database ZIPs are named per-release.
+# Example override:
+#   podman build --build-arg VPIC_URL=https://vpic.nhtsa.dot.gov/api/users/cacheupdate/export?type=full ./db
+ARG VPIC_URL=https://vpic.nhtsa.dot.gov/api/users/cacheupdate/export?type=lite
+
 RUN apk add --no-cache curl unzip
 
-# Download the latest NHTSA VPIC lite release directly from the source.
-# This URL always returns the current monthly release as a zip.
-RUN curl -fsSL "https://vpic.nhtsa.dot.gov/api/users/cacheupdate/export?type=full" \
+RUN curl -fsSL "$VPIC_URL" \
         -o /tmp/vpic.zip \
     && unzip -o /tmp/vpic.zip -d /tmp/init/ \
     && rm /tmp/vpic.zip

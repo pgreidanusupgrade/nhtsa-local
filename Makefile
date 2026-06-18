@@ -1,8 +1,12 @@
 .PHONY: build-db convert build run clean
 
-# Step 1: build the postgres image — downloads latest NHTSA VPIC lite at build time
+# Override VPIC_URL to use the full database or a specific release zip, e.g.:
+#   make build-db VPIC_URL=https://vpic.nhtsa.dot.gov/api/users/cacheupdate/export?type=full
+VPIC_URL ?= https://vpic.nhtsa.dot.gov/api/users/cacheupdate/export?type=lite
+
+# Step 1: build the postgres image — downloads NHTSA VPIC at build time
 build-db:
-	podman build -t vpic-db ./db
+	podman build --build-arg VPIC_URL="$(VPIC_URL)" -t vpic-db ./db
 
 # Step 2: start postgres, run the converter, stop postgres
 # Produces api/vpic.sqlite
