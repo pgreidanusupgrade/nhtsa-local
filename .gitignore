@@ -1,5 +1,6 @@
 api/vpic.sqlite
 api/vpic.sqlite.gz
+api/vpic.gob.gz
 api/vin-api
 api/api
 converter/converter

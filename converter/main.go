@@ -14,11 +14,16 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
+	"encoding/gob"
 	"fmt"
 	"log"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	_ "modernc.org/sqlite"
@@ -86,7 +91,119 @@ func run() error {
 			"See CLAUDE.md 'Procedure integrity' section for what to investigate.", err)
 	}
 
+	gobPath := strings.TrimSuffix(outPath, ".sqlite") + ".gob.gz"
+	log.Printf("serialising gob.gz → %s", gobPath)
+	if err := writeGobGz(db, gobPath); err != nil {
+		return fmt.Errorf("write gob.gz: %w", err)
+	}
+
 	log.Println("done.")
+	return nil
+}
+
+// writeGobGz reads the wmi and patterns tables from the just-written SQLite DB
+// and serialises them as gob-encoded, gzip-compressed VPICData.
+func writeGobGz(db *sql.DB, path string) error {
+	data := VPICData{
+		WMI:      make(map[string]WMIEntry),
+		Patterns: make(map[string][]SchemaGroup),
+	}
+
+	// ── WMI table ──────────────────────────────────────────────────────────
+	rows, err := db.Query(`SELECT wmi, make_names, mfr_name, vehicle_type FROM wmi`)
+	if err != nil {
+		return fmt.Errorf("query wmi: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var wmi string
+		var makeNames, mfrName, vehicleType *string
+		if err := rows.Scan(&wmi, &makeNames, &mfrName, &vehicleType); err != nil {
+			return err
+		}
+		e := WMIEntry{}
+		if makeNames != nil {
+			e.MakeNames = *makeNames
+		}
+		if mfrName != nil {
+			e.MfrName = *mfrName
+		}
+		if vehicleType != nil {
+			e.VehicleType = *vehicleType
+		}
+		data.WMI[wmi] = e
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// ── Patterns table ─────────────────────────────────────────────────────
+	// Fetch ordered so we can build SchemaGroups without an extra sort pass.
+	prows, err := db.Query(`
+		SELECT wmi, schema_id, pattern_id, regex, variable, value
+		FROM patterns
+		ORDER BY wmi, schema_id, pattern_id
+	`)
+	if err != nil {
+		return fmt.Errorf("query patterns: %w", err)
+	}
+	defer prows.Close()
+
+	// Temporary: map[wmi]map[schemaID][]PatternEntry for grouping.
+	type schemaMap = map[int][]PatternEntry
+	byWMI := map[string]schemaMap{}
+
+	for prows.Next() {
+		var wmi, regex, variable, value string
+		var schemaID, patternID int
+		if err := prows.Scan(&wmi, &schemaID, &patternID, &regex, &variable, &value); err != nil {
+			return err
+		}
+		if byWMI[wmi] == nil {
+			byWMI[wmi] = schemaMap{}
+		}
+		byWMI[wmi][schemaID] = append(byWMI[wmi][schemaID], PatternEntry{
+			Regex:    regex,
+			Variable: variable,
+			Value:    value,
+		})
+	}
+	if err := prows.Err(); err != nil {
+		return err
+	}
+
+	for wmi, schemas := range byWMI {
+		ids := make([]int, 0, len(schemas))
+		for id := range schemas {
+			ids = append(ids, id)
+		}
+		sort.Ints(ids)
+		groups := make([]SchemaGroup, 0, len(ids))
+		for _, id := range ids {
+			groups = append(groups, SchemaGroup{SchemaID: id, Patterns: schemas[id]})
+		}
+		data.Patterns[wmi] = groups
+	}
+
+	// ── Serialise ──────────────────────────────────────────────────────────
+	var buf bytes.Buffer
+	gw, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	if err != nil {
+		return err
+	}
+	if err := gob.NewEncoder(gw).Encode(data); err != nil {
+		gw.Close()
+		return fmt.Errorf("gob encode: %w", err)
+	}
+	if err := gw.Close(); err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+		return fmt.Errorf("write file: %w", err)
+	}
+	log.Printf("  wrote %d WMI entries, %d WMIs with patterns, %.1f MB gzip'd",
+		len(data.WMI), len(data.Patterns), float64(buf.Len())/1e6)
 	return nil
 }
 

@@ -1,42 +1,35 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-func openTestDB(t *testing.T) *sql.DB {
+// loadTestData initialises the global lookup tables from the embedded vpic.gob.gz.
+// It is idempotent — multiple calls are safe. Skips the test if the embed is
+// empty (i.e. make convert has not been run yet).
+func loadTestData(t *testing.T) {
 	t.Helper()
-	info, err := os.Stat("vpic.sqlite")
-	if err != nil || info.Size() == 0 {
-		t.Skip("vpic.sqlite not generated yet — run 'make convert' first")
+	if wmiTable != nil {
+		return // already loaded
 	}
-	tdb, err := sql.Open("sqlite", "vpic.sqlite?mode=ro&_busy_timeout=5000")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
+	if err := loadVPICData(); err != nil {
+		t.Skipf("vpic data unavailable — run 'make convert' first: %v", err)
 	}
-	t.Cleanup(func() { tdb.Close() })
-	return tdb
 }
 
 // ---------------------------------------------------------------------------
-// Invalid VIN format tests — no DB required
+// Invalid VIN format tests — no data required
 // ---------------------------------------------------------------------------
 
-// invalidVINs are VINs that must be rejected with HTTP 400.
-// Organised by failure category so regressions are easy to locate.
 var invalidVINs = []struct {
 	vin    string
 	reason string
@@ -109,8 +102,6 @@ var invalidVINs = []struct {
 	{"1HGCM82633A00435\t", "tab character"},
 }
 
-// TestInvalidVINFormat tests the regex directly — no DB or HTTP layer needed.
-// This catches malformed VINs before they ever hit the decode path.
 func TestInvalidVINFormat(t *testing.T) {
 	for _, tc := range invalidVINs {
 		tc := tc
@@ -122,8 +113,6 @@ func TestInvalidVINFormat(t *testing.T) {
 	}
 }
 
-// TestInvalidVINHTTP tests the HTTP handler returns 400 for VINs that are
-// also safe to embed in a URL path (no raw spaces/tabs/slashes).
 func TestInvalidVINHTTP(t *testing.T) {
 	urlSafeInvalid := []struct {
 		vin    string
@@ -159,58 +148,30 @@ func TestInvalidVINHTTP(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Known-VIN integration tests — require vpic.sqlite
+// Known-VIN integration tests — require vpic.gob.gz
 // ---------------------------------------------------------------------------
 
-// vinTestCase is a VIN with its expected VPIC field values.
 type vinTestCase struct {
 	vin       string
-	makeSub   string // expected substring in the Make field (case-insensitive)
-	modelYear string // exact expected ModelYear value
+	makeSub   string
+	modelYear string
 }
 
-// yearChar maps a year character (VIN position 10) to the model year string.
-// Only includes years from 2000 onward; for modern manufacturer WMIs the
-// 1980s interpretation is irrelevant.
 var yearChars = []struct {
 	char string
 	year string
 }{
-	{"Y", "2000"},
-	{"1", "2001"},
-	{"2", "2002"},
-	{"3", "2003"},
-	{"4", "2004"},
-	{"5", "2005"},
-	{"6", "2006"},
-	{"7", "2007"},
-	{"8", "2008"},
-	{"9", "2009"},
-	{"A", "2010"},
-	{"B", "2011"},
-	{"C", "2012"},
-	{"D", "2013"},
-	{"E", "2014"},
-	{"F", "2015"},
-	{"G", "2016"},
-	{"H", "2017"},
-	{"J", "2018"},
-	{"K", "2019"},
-	{"L", "2020"},
-	{"M", "2021"},
-	{"N", "2022"},
-	{"P", "2023"},
-	{"R", "2024"},
+	{"Y", "2000"}, {"1", "2001"}, {"2", "2002"}, {"3", "2003"}, {"4", "2004"},
+	{"5", "2005"}, {"6", "2006"}, {"7", "2007"}, {"8", "2008"}, {"9", "2009"},
+	{"A", "2010"}, {"B", "2011"}, {"C", "2012"}, {"D", "2013"}, {"E", "2014"},
+	{"F", "2015"}, {"G", "2016"}, {"H", "2017"}, {"J", "2018"}, {"K", "2019"},
+	{"L", "2020"}, {"M", "2021"}, {"N", "2022"}, {"P", "2023"}, {"R", "2024"},
 }
 
-// knownVINSources are real manufacturer WMIs + a VDS prefix.
-// Each entry produces 25 VINs (one per model year 2000-2024).
-// The VDS value is representative; VPIC will decode at least Make + ModelYear
-// for any syntactically valid VIN from a registered WMI.
 var knownVINSources = []struct {
 	wmi     string
-	vds     string // 5 chars: no I, O, Q
-	makeSub string // expected substring in Make (case-insensitive)
+	vds     string
+	makeSub string
 }{
 	{"1HG", "CM826", "honda"},
 	{"2HG", "FG128", "honda"},
@@ -227,46 +188,35 @@ var knownVINSources = []struct {
 	{"JN1", "AZ4EH", "nissan"},
 	{"5NP", "EH4CF", "hyundai"},
 	{"KMH", "CM3AC", "hyundai"},
-	{"5XY", "K3DB3", "hyundai"}, // 5XY is shared Hyundai/Kia; primary make_id in NHTSA DB is Hyundai
+	{"5XY", "K3DB3", "hyundai"}, // shared Hyundai/Kia WMI; primary make_id in NHTSA DB is Hyundai
 	{"KNA", "D5DH3", "kia"},
 	{"WVW", "AU7LA", "volkswagen"},
 	{"WP0", "AD2A6", "porsche"},
 	{"5YJ", "SA1E2", "tesla"},
 }
 
-// buildKnownVINs generates the 500-entry test table from knownVINSources × yearChars.
 func buildKnownVINs() []vinTestCase {
 	cases := make([]vinTestCase, 0, len(knownVINSources)*len(yearChars))
 	for _, src := range knownVINSources {
 		for _, y := range yearChars {
-			// Structure: WMI(3) + VDS(5) + check(1='0') + yearChar(1) + plant(1='A') + seq(6)
 			vin := src.wmi + src.vds + "0" + y.char + "A" + "000001"
-			cases = append(cases, vinTestCase{
-				vin:       vin,
-				makeSub:   src.makeSub,
-				modelYear: y.year,
-			})
+			cases = append(cases, vinTestCase{vin: vin, makeSub: src.makeSub, modelYear: y.year})
 		}
 	}
-	// Shuffle so test order is not always WMI-grouped × year-sequential.
-	// This catches ordering-dependent cache bugs and makes failures easier to spot.
 	rand.Shuffle(len(cases), func(i, j int) { cases[i], cases[j] = cases[j], cases[i] })
 	return cases
 }
 
 func TestKnownVINDecoding(t *testing.T) {
-	tdb := openTestDB(t)
-	db = tdb // set package-level var used by decodeVIN
-
+	loadTestData(t)
 	cases := buildKnownVINs()
 	if len(cases) != 500 {
 		t.Fatalf("expected 500 test cases, got %d", len(cases))
 	}
-
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.vin, func(t *testing.T) {
-			res, err := decodeVIN(tdb, tc.vin)
+			res, err := decodeVIN(tc.vin)
 			if err != nil {
 				t.Fatalf("decodeVIN: %v", err)
 			}
@@ -274,13 +224,9 @@ func TestKnownVINDecoding(t *testing.T) {
 				t.Errorf("no results returned (WMI may not be in DB)")
 				return
 			}
-
-			// ModelYear is deterministic from position 10 — always assert it.
 			if res.ModelYear != tc.modelYear {
 				t.Errorf("ModelYear: want %q, got %q", tc.modelYear, res.ModelYear)
 			}
-
-			// Make must contain the expected manufacturer substring.
 			if !strings.Contains(strings.ToLower(res.Make), tc.makeSub) {
 				t.Errorf("Make: want substring %q, got %q", tc.makeSub, res.Make)
 			}
@@ -288,14 +234,10 @@ func TestKnownVINDecoding(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Specific well-known VINs with fuller expected values
-// ---------------------------------------------------------------------------
-
 var specificVINTests = []struct {
-	vin       string
-	wantMake  string
-	wantYear  string
+	vin      string
+	wantMake string
+	wantYear string
 }{
 	{"1HGCM82633A004352", "HONDA", "2003"},
 	{"1FTFW1ET5EKE52261", "FORD", "2014"},
@@ -303,13 +245,11 @@ var specificVINTests = []struct {
 }
 
 func TestSpecificVINs(t *testing.T) {
-	tdb := openTestDB(t)
-	db = tdb
-
+	loadTestData(t)
 	for _, tc := range specificVINTests {
 		tc := tc
 		t.Run(tc.vin, func(t *testing.T) {
-			res, err := decodeVIN(tdb, tc.vin)
+			res, err := decodeVIN(tc.vin)
 			if err != nil {
 				t.Fatalf("decodeVIN: %v", err)
 			}

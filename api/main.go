@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"log"
 	"math/rand/v2"
@@ -9,14 +8,9 @@ import (
 	"os"
 	"regexp"
 	"strings"
-
-	_ "modernc.org/sqlite"
 )
 
-var (
-	db    *sql.DB
-	vinRE = regexp.MustCompile(`(?i)^[A-HJ-NPR-Z0-9]{17}$`)
-)
+var vinRE = regexp.MustCompile(`(?i)^[A-HJ-NPR-Z0-9]{17}$`)
 
 const vinChars = "ABCDEFGHJKLMNPRSTUVWXYZ0123456789"
 
@@ -45,7 +39,7 @@ func handleVIN(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := decodeVIN(db, vin)
+	result, err := decodeVIN(vin)
 	if err != nil {
 		log.Printf("decodeVIN %s: %v", vin, err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -58,7 +52,7 @@ func handleVIN(w http.ResponseWriter, r *http.Request) {
 func handleBench(w http.ResponseWriter, r *http.Request) {
 	vin := randomVIN()
 	w.Header().Set("Content-Type", "application/json")
-	result, err := decodeVIN(db, vin)
+	result, err := decodeVIN(vin)
 	if err != nil {
 		log.Printf("bench decodeVIN %s: %v", vin, err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -73,14 +67,9 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	var err error
-	db, err = openEmbeddedDB()
-	if err != nil {
-		log.Fatalf("open db: %v", err)
+	if err := loadVPICData(); err != nil {
+		log.Fatalf("load vpic data: %v", err)
 	}
-	defer db.Close()
-
-	db.SetMaxOpenConns(1) // sqlite is single-writer; reads share fine with WAL
 
 	addr := ":8080"
 	if p := os.Getenv("PORT"); p != "" {

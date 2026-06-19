@@ -15,7 +15,6 @@ convert: build-db
 	podman run --rm -e DATABASE_URL="postgres://vpic:vpic@host.containers.internal:5432/vpic?sslmode=disable" -e OUTPUT_PATH=/out/vpic.sqlite -v "$(PWD)/api:/out" vpic-converter
 	podman stop vpic-db-tmp
 	podman rm vpic-db-tmp
-	gzip -k -9 api/vpic.sqlite -c > api/vpic.sqlite.gz
 
 # Run the test suite against the local vpic.sqlite (must run make convert first)
 test:
@@ -34,4 +33,4 @@ all: convert test build run
 
 clean:
 	podman compose down
-	rm -f api/vpic.sqlite
+	rm -f api/vpic.sqlite api/vpic.gob.gz

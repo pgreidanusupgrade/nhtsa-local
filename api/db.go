@@ -3,50 +3,82 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
-	"database/sql"
+	"encoding/gob"
 	"fmt"
-	"io"
-	"os"
+	"regexp"
 )
 
-// openEmbeddedDB decompresses the embedded gzip-compressed SQLite database to
-// a temp file and opens it. The gzip layer cuts the binary from ~361MB to ~100MB.
-func openEmbeddedDB() (*sql.DB, error) {
-	if len(sqliteDataGz) == 0 {
-		return nil, fmt.Errorf("vpic.sqlite.gz is empty — run 'make convert' then 'make build'")
+// compiledPattern is a PatternEntry with its regex pre-compiled.
+type compiledPattern struct {
+	re       *regexp.Regexp
+	variable string
+	value    string
+}
+
+// compiledSchema is a SchemaGroup with compiled patterns.
+type compiledSchema struct {
+	schemaID int
+	patterns []compiledPattern
+}
+
+// Global lookup tables populated once at startup by loadVPICData.
+var (
+	wmiTable     map[string]WMIEntry
+	patternTable map[string][]compiledSchema // WMI → schemas ordered by schema_id asc
+)
+
+// loadVPICData deserialises the embedded vpic.gob.gz and pre-compiles all
+// regex patterns. Called once from main before serving requests.
+func loadVPICData() error {
+	if len(vpicGobGz) == 0 {
+		return fmt.Errorf("vpic.gob.gz is empty — run 'make convert' then rebuild")
 	}
 
-	gr, err := gzip.NewReader(bytes.NewReader(sqliteDataGz))
+	gr, err := gzip.NewReader(bytes.NewReader(vpicGobGz))
 	if err != nil {
-		return nil, fmt.Errorf("gzip reader: %w", err)
+		return fmt.Errorf("gzip reader: %w", err)
 	}
 	defer gr.Close()
 
-	f, err := os.CreateTemp("", "vpic-*.sqlite")
-	if err != nil {
-		return nil, fmt.Errorf("temp file: %w", err)
-	}
-	if _, err := io.Copy(f, gr); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("decompress db: %w", err)
-	}
-	path := f.Name()
-	f.Close()
-
-	db, err := sql.Open("sqlite", path+"?_busy_timeout=5000")
-	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
-	}
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("ping: %w", err)
+	var data VPICData
+	if err := gob.NewDecoder(gr).Decode(&data); err != nil {
+		return fmt.Errorf("gob decode: %w", err)
 	}
 
-	// Validate schema — catches the case where make build ran before make convert.
-	var count int
-	err = db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('patterns','wmi')`).Scan(&count)
-	if err != nil || count < 2 {
-		return nil, fmt.Errorf("vpic.sqlite.gz is missing required tables (got %d/2) — run 'make convert' then 'make build'", count)
+	// Validate basic sanity — catches an empty/truncated embed.
+	if len(data.WMI) < 1000 {
+		return fmt.Errorf("vpic.gob.gz appears truncated: only %d WMI entries", len(data.WMI))
 	}
 
-	return db, nil
+	wmiTable = data.WMI
+
+	patternTable = make(map[string][]compiledSchema, len(data.Patterns))
+	var failedRegex int
+	for wmi, schemas := range data.Patterns {
+		compiled := make([]compiledSchema, 0, len(schemas))
+		for _, sg := range schemas {
+			cs := compiledSchema{schemaID: sg.SchemaID}
+			for _, p := range sg.Patterns {
+				re, err := regexp.Compile("(?i)" + p.Regex)
+				if err != nil {
+					failedRegex++
+					continue
+				}
+				cs.patterns = append(cs.patterns, compiledPattern{
+					re:       re,
+					variable: p.Variable,
+					value:    p.Value,
+				})
+			}
+			if len(cs.patterns) > 0 {
+				compiled = append(compiled, cs)
+			}
+		}
+		patternTable[wmi] = compiled
+	}
+
+	if failedRegex > 0 {
+		return fmt.Errorf("%d patterns failed to compile — vpic.gob.gz may be corrupt", failedRegex)
+	}
+	return nil
 }

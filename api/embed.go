@@ -2,5 +2,5 @@ package main
 
 import _ "embed"
 
-//go:embed vpic.sqlite.gz
-var sqliteDataGz []byte
+//go:embed vpic.gob.gz
+var vpicGobGz []byte

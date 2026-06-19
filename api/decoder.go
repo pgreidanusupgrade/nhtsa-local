@@ -1,12 +1,9 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -20,18 +17,6 @@ type decodeResult struct {
 	ModelYear   string            `json:"model_year,omitempty"`
 	Attributes  map[string]string `json:"attributes"`
 }
-
-// patternRow is one row from the patterns table.
-type patternRow struct {
-	regex    string
-	compiled *regexp.Regexp
-	variable string
-	value    string
-}
-
-// schemaCache caches compiled regex sets per (wmi, schema_id) to avoid
-// recompiling on every request for the same VIN prefix.
-var schemaCache sync.Map // key: "wmi:schema_id" → []patternRow
 
 // vinWMI implements vpic.fVinWMI: first 3 chars, extended to 6 if pos 3 is '9'.
 // Small-volume manufacturers use a 6-char WMI (VIN[0:3] + VIN[11:14]).
@@ -92,10 +77,9 @@ func vinModelYear(vin string) int {
 	return y
 }
 
-// decodeVIN decodes a VIN and returns structured results.
-// Make/VehicleType come from the wmi table. ModelYear is computed from VIN[9].
-// All other attributes come from pattern matching.
-func decodeVIN(db *sql.DB, vin string) (*decodeResult, error) {
+// decodeVIN decodes a VIN using the in-memory lookup tables populated by
+// loadVPICData. No database access occurs after startup.
+func decodeVIN(vin string) (*decodeResult, error) {
 	vin = strings.ToUpper(vin)
 	if len(vin) < 3 {
 		return nil, fmt.Errorf("VIN too short")
@@ -109,30 +93,15 @@ func decodeVIN(db *sql.DB, vin string) (*decodeResult, error) {
 		Attributes: map[string]string{},
 	}
 
-	// 1. Look up WMI-level attributes (Make, Manufacturer, VehicleType).
-	var makeNames, mfrName, vehicleType *string
-	var makeID, mfrID, vehicleTypeID *int
-	row := db.QueryRow(`
-		SELECT make_id, make_names, mfr_id, mfr_name, vehicle_type_id, vehicle_type
-		FROM wmi WHERE wmi = ?
-	`, wmi)
-	if err := row.Scan(&makeID, &makeNames, &mfrID, &mfrName, &vehicleTypeID, &vehicleType); err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("wmi lookup: %w", err)
-	}
-	if makeNames != nil {
-		parts := strings.SplitN(*makeNames, ",", 2)
-		res.Make = parts[0]
-		if len(parts) == 1 {
-			res.MakeName = parts[0]
-		} else {
-			res.MakeName = *makeNames
+	// 1. WMI-level attributes: Make, Manufacturer, VehicleType.
+	if entry, ok := wmiTable[wmi]; ok {
+		if entry.MakeNames != "" {
+			parts := strings.SplitN(entry.MakeNames, ",", 2)
+			res.Make = parts[0]
+			res.MakeName = entry.MakeNames
 		}
-	}
-	if mfrName != nil {
-		res.Manufacturer = *mfrName
-	}
-	if vehicleType != nil {
-		res.VehicleType = *vehicleType
+		res.Manufacturer = entry.MfrName
+		res.VehicleType = entry.VehicleType
 	}
 
 	// 2. ModelYear from VIN position 10.
@@ -141,56 +110,12 @@ func decodeVIN(db *sql.DB, vin string) (*decodeResult, error) {
 	}
 
 	// 3. Pattern-based attributes.
-	type schemaKey struct {
-		wmi      string
-		schemaID int
-	}
-
-	dbRows, err := db.Query(`
-		SELECT schema_id, regex, variable, value
-		FROM patterns
-		WHERE wmi = ?
-		ORDER BY schema_id, pattern_id
-	`, wmi)
-	if err != nil {
-		return nil, err
-	}
-	defer dbRows.Close()
-
-	bySchema := map[int][]patternRow{}
-	for dbRows.Next() {
-		var schemaID int
-		var r patternRow
-		if err := dbRows.Scan(&schemaID, &r.regex, &r.variable, &r.value); err != nil {
-			return nil, err
-		}
-		bySchema[schemaID] = append(bySchema[schemaID], r)
-	}
-	if err := dbRows.Err(); err != nil {
-		return nil, err
-	}
-
-	for schemaID, pats := range bySchema {
-		sk := schemaKey{wmi, schemaID}
-		var compiled []patternRow
-		if cached, ok := schemaCache.Load(sk); ok {
-			compiled = cached.([]patternRow)
-		} else {
-			compiled = make([]patternRow, 0, len(pats))
-			for _, p := range pats {
-				re, err := regexp.Compile("(?i)" + p.regex)
-				if err != nil {
-					continue
-				}
-				p.compiled = re
-				compiled = append(compiled, p)
-			}
-			schemaCache.Store(sk, compiled)
-		}
-
+	// Schemas are tried in ascending schema_id order (pre-sorted at load time).
+	// The first schema with any matching pattern wins; remaining schemas skipped.
+	for _, schema := range patternTable[wmi] {
 		matched := false
-		for _, p := range compiled {
-			if p.compiled.MatchString(key) {
+		for _, p := range schema.patterns {
+			if p.re.MatchString(key) {
 				res.Attributes[p.variable] = p.value
 				matched = true
 			}

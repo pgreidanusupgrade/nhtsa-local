@@ -25,7 +25,6 @@ package main
 //     family but differs in brand name.
 
 import (
-	"database/sql"
 	"encoding/json"
 	"math/rand/v2"
 	"os"
@@ -64,14 +63,13 @@ func sameFamily(a, b string) bool {
 	return aOK && bOK && fa == fb
 }
 
-// wmiMakeNames returns all makes registered to a WMI in our SQLite DB.
-func wmiMakeNames(db *sql.DB, wmi string) []string {
-	var raw *string
-	_ = db.QueryRow(`SELECT make_names FROM wmi WHERE wmi = ?`, wmi).Scan(&raw)
-	if raw == nil || *raw == "" {
+// wmiMakeNames returns all makes registered to a WMI from the in-memory table.
+func wmiMakeNames(wmi string) []string {
+	entry, ok := wmiTable[wmi]
+	if !ok || entry.MakeNames == "" {
 		return nil
 	}
-	parts := strings.Split(*raw, ",")
+	parts := strings.Split(entry.MakeNames, ",")
 	for i, p := range parts {
 		parts[i] = strings.ToUpper(strings.TrimSpace(p))
 	}
@@ -95,10 +93,8 @@ func loadGoldenFixture(t *testing.T) goldenFixture {
 
 func TestGoldenVINs(t *testing.T) {
 	fixture := loadGoldenFixture(t)
-	tdb := openTestDB(t)
-	db = tdb
+	loadTestData(t)
 
-	// Shuffle for order-independent failure surfacing.
 	vins := make([]string, 0, len(fixture))
 	for vin := range fixture {
 		vins = append(vins, vin)
@@ -112,7 +108,7 @@ func TestGoldenVINs(t *testing.T) {
 		want := fixture[vin]
 
 		t.Run(vin, func(t *testing.T) {
-			res, err := decodeVIN(tdb, vin)
+			res, err := decodeVIN(vin)
 			if err != nil {
 				t.Fatalf("decodeVIN: %v", err)
 			}
@@ -137,7 +133,7 @@ func TestGoldenVINs(t *testing.T) {
 					// Accept if NHTSA's make is listed in our WMI's make_names —
 					// multi-brand WMI, decoder picked the primary make correctly.
 					found := false
-					for _, m := range wmiMakeNames(tdb, vinWMI(vin)) {
+					for _, m := range wmiMakeNames(vinWMI(vin)) {
 						if m == nhtsaMake {
 							found = true
 							break
