@@ -1,6 +1,10 @@
-api/vpic.sqlite
-api/vpic.sqlite.gz
-api/vpic.gob.gz
-api/vin-api
-api/api
+api-gob/vpic.sqlite
+api-gob/vpic.sqlite.gz
+api-gob/vpic.gob.gz
+api-gob/vin-api
+api-gob/api
+api-sqlite/vpic.sqlite
+api-sqlite/vpic.sqlite.gz
+api-sqlite/vin-api
+api-sqlite/api
 converter/converter

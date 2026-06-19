@@ -1,7 +1,13 @@
 services:
-  api:
+  api-gob:
     build:
-      context: api
+      context: api-gob
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
+  api-sqlite:
+    build:
+      context: api-sqlite
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8080"
