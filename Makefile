@@ -1,4 +1,4 @@
-.PHONY: build-db convert build run test test-gob test-sqlite clean
+.PHONY: build-db convert build run test test-unit test-gob test-sqlite test-integration clean
 
 # Step 1: build the postgres image — auto-downloads current month's NHTSA VPIC release
 # To pin a specific release: make build-db VPIC_URL=https://vpic.nhtsa.dot.gov/downloads/vPICList_full_2026_06.plain.zip
@@ -19,16 +19,35 @@ convert: build-db
 	podman stop vpic-db-tmp
 	podman rm vpic-db-tmp
 
-# Run the test suite for the gob implementation
+# Unit tests: run inside each module (require vpic data files; skip gracefully if absent)
 test-gob:
 	cd api-gob && go test -v ./...
 
-# Run the test suite for the sqlite implementation
 test-sqlite:
 	cd api-sqlite && go test -v ./...
 
-# Run both test suites
-test: test-gob test-sqlite
+test-unit: test-gob test-sqlite
+
+# Integration tests: spin up both containers, verify parity and NHTSA correctness,
+# then tear them down. GOB_URL / SQLITE_URL override the default localhost ports.
+#
+# Flags:
+#   INTEG_SHORT=1   only test the 6 curated probe VINs (fast smoke test)
+#   INTEG_TIMEOUT   go test -timeout value (default: 5m)
+INTEG_FLAGS :=
+ifdef INTEG_SHORT
+INTEG_FLAGS += -short
+endif
+INTEG_TIMEOUT ?= 5m
+
+test-integration:
+	podman compose up -d --build
+	scripts/wait-healthy.sh
+	cd integration && go test -v -timeout $(INTEG_TIMEOUT) $(INTEG_FLAGS) ./...
+	podman compose down
+
+# Full test suite: unit tests for both modules + integration tests
+test: test-unit test-integration
 
 # Step 3: build both API images
 build:
