@@ -56,12 +56,23 @@ test: test-unit test-integration
 build:
 	podman compose build
 
-# Step 4: run api-gob on :8080, api-sqlite on :8081
+# Step 4: run api-gob on :8080, api-sqlite on :8081 (foreground)
 run:
 	podman compose up
 
-# All in one
-all: convert test build run
+# Clean, convert, unit-test, build images, integration-test, leave containers running.
+# After this completes both APIs are up: api-gob :8080  api-sqlite :8081
+all:
+	$(MAKE) clean
+	$(MAKE) convert
+	$(MAKE) test-unit
+	podman compose up -d --build
+	scripts/wait-healthy.sh
+	cd integration && go test -v -timeout $(INTEG_TIMEOUT) $(INTEG_FLAGS) ./...
+	@echo ""
+	@echo "All checks passed. Containers are up:"
+	@echo "  api-gob    http://localhost:8080"
+	@echo "  api-sqlite http://localhost:8081"
 
 clean:
 	podman compose down
