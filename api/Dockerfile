@@ -3,11 +3,12 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go build -o vin-api .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o vin-api .
+# Provide an empty /tmp for the scratch image (no shell available there)
+RUN mkdir /empty-tmp
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
-WORKDIR /app
-COPY --from=builder /app/vin-api .
+FROM scratch
+COPY --from=builder /empty-tmp /tmp
+COPY --from=builder /app/vin-api /vin-api
 EXPOSE 8080
-CMD ["./vin-api"]
+ENTRYPOINT ["/vin-api"]
