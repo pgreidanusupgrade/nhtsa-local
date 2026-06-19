@@ -5,9 +5,11 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
+    restart: "no"
   api-sqlite:
     build:
       context: api-sqlite
       dockerfile: Dockerfile
     ports:
       - "8081:8080"
+    restart: "no"

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/gob"
 	"fmt"
+	"log"
 	"regexp"
 )
 
@@ -78,7 +79,7 @@ func loadVPICData() error {
 	}
 
 	if failedRegex > 0 {
-		return fmt.Errorf("%d patterns failed to compile — vpic.gob.gz may be corrupt", failedRegex)
+		log.Printf("warning: %d patterns skipped (regex unsupported by RE2)", failedRegex)
 	}
 	return nil
 }
