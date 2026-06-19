@@ -1,3 +1,6 @@
+# Anchor to the Makefile's directory — immune to stale $PWD from a renamed working dir.
+REPO_ROOT := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
+
 .PHONY: build-db convert build run test test-unit test-gob test-sqlite test-integration clean
 
 # Step 1: build the postgres image — auto-downloads current month's NHTSA VPIC release
@@ -12,9 +15,9 @@ convert: build-db
 	podman run -d --name vpic-db-tmp -e POSTGRES_DB=vpic -e POSTGRES_USER=vpic -e POSTGRES_PASSWORD=vpic -p 5432:5432 vpic-db
 	until podman exec vpic-db-tmp pg_isready -U vpic -d vpic; do sleep 1; done
 	podman build -t vpic-converter ./converter
-	podman run --rm -e DATABASE_URL="postgres://vpic:vpic@host.containers.internal:5432/vpic?sslmode=disable" -e OUTPUT_PATH=/out/vpic.sqlite -v "$(PWD)/api-sqlite:/out" vpic-converter
+	podman run --rm -e DATABASE_URL="postgres://vpic:vpic@host.containers.internal:5432/vpic?sslmode=disable" -e OUTPUT_PATH=/out/vpic.sqlite -v "$(REPO_ROOT)/api-sqlite:/out" vpic-converter
 	cp api-sqlite/vpic.sqlite api-gob/vpic.sqlite
-	cd /tmp/sqlite_to_gob && go run . $(PWD)/api-gob/vpic.sqlite $(PWD)/api-gob/vpic.gob.gz
+	cd /tmp/sqlite_to_gob && go run . $(REPO_ROOT)/api-gob/vpic.sqlite $(REPO_ROOT)/api-gob/vpic.gob.gz
 	gzip -k -9 api-sqlite/vpic.sqlite -c > api-sqlite/vpic.sqlite.gz
 	podman stop vpic-db-tmp
 	podman rm vpic-db-tmp
